@@ -68,15 +68,14 @@ export const PaymentStep = ({ onBack, onComplete }) => {
     if (paymentMethod === 'wallet') methodLabel = 'Apple Pay / Digital Wallet';
     if (paymentMethod === 'cod') methodLabel = 'Cash on Delivery (Pay upon arrival)';
 
-    setTimeout(() => {
-      setIsProcessing(false);
-      const placed = placeOrder({
+    setTimeout(async () => {
+      const placed = await placeOrder({
         paymentMethod: methodLabel,
         pointsToRedeem,
-        shippingFee,
         deliveryAddress: selectedAddress,
       });
-      onComplete(placed);
+      setIsProcessing(false);
+      if (placed) onComplete(placed);
     }, 1500);
   };
 

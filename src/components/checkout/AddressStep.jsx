@@ -31,10 +31,11 @@ export const AddressStep = ({ onNext }) => {
     return Object.keys(errs).length === 0;
   };
 
-  const handleSaveNewAddress = (e) => {
+  const handleSaveNewAddress = async (e) => {
     e.preventDefault();
     if (!validate()) return;
-    const newAddress = addAddress(formData);
+    const newAddress = await addAddress(formData);
+    if (!newAddress) return;
     setSelectedAddressId(newAddress.id);
     setShowAddForm(false);
   };

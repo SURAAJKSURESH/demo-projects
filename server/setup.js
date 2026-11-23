@@ -100,7 +100,17 @@ try {
   );
   console.log(`Database "${connectionConfig.database}" ready:`, rows[0]);
 } catch (err) {
-  console.error('Database setup failed:', err.message);
+  // Node reports "connection refused" as an AggregateError with an empty message.
+  const reasons = (err.errors || [err]).map((e) => e.message || `${e.code} ${e.address || ''}:${e.port || ''}`);
+  console.error('Database setup failed:', [...new Set(reasons)].join('; '));
+  if (['ECONNREFUSED', 'ENOTFOUND'].includes(err.code) || err.errors?.some((e) => e.code === 'ECONNREFUSED')) {
+    console.error(
+      `Cannot reach PostgreSQL at ${connectionConfig.host}:${connectionConfig.port}. ` +
+        'Start it first (docker compose up -d) or set PGHOST / PGPORT.'
+    );
+  } else if (err.code === '28P01') {
+    console.error('Wrong username or password. Set PGUSER / PGPASSWORD.');
+  }
   process.exitCode = 1;
 } finally {
   await pool.end();

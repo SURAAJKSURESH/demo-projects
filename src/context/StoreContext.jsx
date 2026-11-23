@@ -1,42 +1,37 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { INITIAL_BOOKS, INITIAL_USER, INITIAL_ORDERS, getTentativeDeliveryDate } from '../data/booksData';
+import { INITIAL_BOOKS, INITIAL_USER } from '../data/booksData';
+import { api } from '../api';
 
 const StoreContext = createContext();
 
-export const StoreProvider = ({ children }) => {
-  // Books catalog
-  const [books, setBooks] = useState(() => {
-    const saved = localStorage.getItem('ebookstore_books');
-    return saved ? JSON.parse(saved) : INITIAL_BOOKS;
-  });
+const USER_ID_KEY = 'ebookstore_user_id';
 
-  // User & Auth
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem('ebookstore_user');
-    return saved ? JSON.parse(saved) : INITIAL_USER;
+export const StoreProvider = ({ children }) => {
+  // Books catalog (static copy is shown until the API responds)
+  const [books, setBooks] = useState(INITIAL_BOOKS);
+
+  // User & Auth (loaded from PostgreSQL via the API)
+  const [user, setUser] = useState({
+    id: '',
+    name: 'Guest',
+    email: '',
+    avatar: INITIAL_USER.avatar,
+    giftPoints: 0,
   });
   const [isAuthenticated, setIsAuthenticated] = useState(true);
 
   // Addresses
-  const [addresses, setAddresses] = useState(() => {
-    const saved = localStorage.getItem('ebookstore_addresses');
-    return saved ? JSON.parse(saved) : INITIAL_USER.addresses;
-  });
-  const [selectedAddressId, setSelectedAddressId] = useState(() => {
-    return addresses.find(a => a.isDefault)?.id || addresses[0]?.id || '';
-  });
+  const [addresses, setAddresses] = useState([]);
+  const [selectedAddressId, setSelectedAddressId] = useState('');
 
-  // Cart: [{ bookId, quantity, book }]
+  // Cart: [{ bookId, quantity, book }] — client-side only
   const [cart, setCart] = useState(() => {
     const saved = localStorage.getItem('ebookstore_cart');
     return saved ? JSON.parse(saved) : [];
   });
 
   // Orders
-  const [orders, setOrders] = useState(() => {
-    const saved = localStorage.getItem('ebookstore_orders');
-    return saved ? JSON.parse(saved) : INITIAL_ORDERS;
-  });
+  const [orders, setOrders] = useState([]);
 
   // Navigation and UI Modals
   const [activeView, setActiveView] = useState('home'); // 'home' | 'catalog' | 'orders' | 'profile'
@@ -56,26 +51,47 @@ export const StoreProvider = ({ children }) => {
   // Toast notifications
   const [toasts, setToasts] = useState([]);
 
-  // Local storage synchronization
-  useEffect(() => {
-    localStorage.setItem('ebookstore_books', JSON.stringify(books));
-  }, [books]);
-
-  useEffect(() => {
-    localStorage.setItem('ebookstore_user', JSON.stringify(user));
-  }, [user]);
-
-  useEffect(() => {
-    localStorage.setItem('ebookstore_addresses', JSON.stringify(addresses));
-  }, [addresses]);
-
   useEffect(() => {
     localStorage.setItem('ebookstore_cart', JSON.stringify(cart));
   }, [cart]);
 
+  const applyAccount = (account) => {
+    setUser(account.user);
+    setAddresses(account.addresses);
+    setOrders(account.orders);
+    setSelectedAddressId(
+      account.addresses.find(a => a.isDefault)?.id || account.addresses[0]?.id || ''
+    );
+    localStorage.setItem(USER_ID_KEY, account.user.id);
+  };
+
+  const refreshBooks = () => {
+    api.getBooks().then(setBooks).catch(() => {});
+  };
+
+  // Initial load: catalogue + the signed-in user's account from the API
   useEffect(() => {
-    localStorage.setItem('ebookstore_orders', JSON.stringify(orders));
-  }, [orders]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const [dbBooks, account] = await Promise.all([
+          api.getBooks(),
+          api
+            .getAccount(localStorage.getItem(USER_ID_KEY) || INITIAL_USER.id)
+            .catch(() => api.login(INITIAL_USER.email, INITIAL_USER.name)),
+        ]);
+        if (cancelled) return;
+        setBooks(dbBooks);
+        applyAccount(account);
+      } catch (err) {
+        if (!cancelled) showToast(err.message, 'error');
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const showToast = (message, type = 'success') => {
     const id = Date.now() + Math.random().toString();
@@ -90,16 +106,16 @@ export const StoreProvider = ({ children }) => {
   };
 
   // Auth operations
-  const login = (email, name = 'Alex Johnson') => {
-    const updatedUser = {
-      ...user,
-      email,
-      name,
-    };
-    setUser(updatedUser);
-    setIsAuthenticated(true);
-    setIsAuthModalOpen(false);
-    showToast(`Welcome back, ${name}!`);
+  const login = async (email, name = 'Alex Johnson') => {
+    try {
+      const account = await api.login(email, name);
+      applyAccount(account);
+      setIsAuthenticated(true);
+      setIsAuthModalOpen(false);
+      showToast(`Welcome back, ${account.user.name}!`);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
   };
 
   const logout = () => {
@@ -148,72 +164,45 @@ export const StoreProvider = ({ children }) => {
   };
 
   // Address operations
-  const addAddress = (newAddr) => {
-    const id = 'addr_' + Date.now();
-    const addressWithId = { ...newAddr, id, isDefault: addresses.length === 0 };
-    setAddresses(prev => [...prev, addressWithId]);
-    setSelectedAddressId(id);
-    showToast('Delivery address saved successfully!');
-    return addressWithId;
+  const addAddress = async (newAddr) => {
+    try {
+      const saved = await api.addAddress(user.id, newAddr);
+      setAddresses(prev => [...prev, saved]);
+      setSelectedAddressId(saved.id);
+      showToast('Delivery address saved successfully!');
+      return saved;
+    } catch (err) {
+      showToast(err.message, 'error');
+      return null;
+    }
   };
 
-  // Order Placement
-  const placeOrder = ({
-    paymentMethod,
-    pointsToRedeem = 0,
-    shippingFee = 0,
-    deliveryAddress,
-  }) => {
-    const subtotal = cart.reduce((acc, item) => acc + item.book.price * item.quantity, 0);
-    // 100 points = $10 discount ($0.10 per point)
-    const discountFromPoints = Math.min(pointsToRedeem * 0.1, subtotal);
-    const taxableAmount = Math.max(0, subtotal - discountFromPoints);
-    const tax = taxableAmount * 0.085; // 8.5% tax
-    const total = taxableAmount + tax + (subtotal > 35 ? 0 : shippingFee);
+  // Order Placement — the server prices the order, checks stock and updates points
+  const placeOrder = async ({ paymentMethod, pointsToRedeem = 0, deliveryAddress }) => {
+    try {
+      const { order, user: updatedUser } = await api.placeOrder({
+        userId: user.id,
+        addressId: deliveryAddress?.id || selectedAddressId,
+        paymentMethod,
+        pointsToRedeem,
+        items: cart.map(item => ({ bookId: item.bookId, quantity: item.quantity })),
+      });
 
-    // Calculate points earned (1 point per dollar spent)
-    const pointsEarned = Math.round(total);
+      setUser(updatedUser);
+      setOrders(prev => [order, ...prev]);
+      refreshBooks();
 
-    const newOrder = {
-      id: 'ORD-' + Math.floor(100000 + Math.random() * 900000),
-      createdAt: new Date().toISOString(),
-      status: 'Processing',
-      items: cart.map(item => ({
-        bookId: item.bookId,
-        title: item.book.title,
-        author: item.book.author,
-        price: item.book.price,
-        quantity: item.quantity,
-        cover: item.book.cover,
-        deliveryDate: getTentativeDeliveryDate(item.book.deliveryDays || 2),
-      })),
-      subtotal: parseFloat(subtotal.toFixed(2)),
-      discountFromPoints: parseFloat(discountFromPoints.toFixed(2)),
-      pointsRedeemed: pointsToRedeem,
-      pointsEarned,
-      shippingFee: subtotal > 35 ? 0 : shippingFee,
-      tax: parseFloat(tax.toFixed(2)),
-      total: parseFloat(total.toFixed(2)),
-      paymentMethod,
-      deliveryAddress,
-      tentativeDelivery: getTentativeDeliveryDate(2),
-      canCancel: true,
-    };
+      // Clear cart and show confirmation
+      clearCart();
+      setIsCheckoutOpen(false);
+      setLatestConfirmedOrder(order);
+      showToast(`Order #${order.id} placed successfully! 🎉`);
 
-    // Update user points
-    const updatedPoints = (user.giftPoints || 0) - pointsToRedeem + pointsEarned;
-    setUser(prev => ({ ...prev, giftPoints: updatedPoints }));
-
-    // Update orders list
-    setOrders(prev => [newOrder, ...prev]);
-
-    // Clear cart and show confirmation
-    clearCart();
-    setIsCheckoutOpen(false);
-    setLatestConfirmedOrder(newOrder);
-    showToast(`Order #${newOrder.id} placed successfully! 🎉`);
-
-    return newOrder;
+      return order;
+    } catch (err) {
+      showToast(err.message, 'error');
+      return null;
+    }
   };
 
   // Buy Again feature
@@ -232,35 +221,18 @@ export const StoreProvider = ({ children }) => {
   };
 
   // Cancel Order (within 48 hrs)
-  const cancelOrder = (orderId) => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order) return false;
-
-    const orderTime = new Date(order.createdAt).getTime();
-    const now = Date.now();
-    const hoursElapsed = (now - orderTime) / (1000 * 60 * 60);
-
-    if (hoursElapsed > 48) {
-      showToast('Cancellation window (48 hours) has expired for this order.', 'error');
+  const cancelOrder = async (orderId) => {
+    try {
+      const { order, user: updatedUser } = await api.cancelOrder(orderId, user.id);
+      setUser(updatedUser);
+      setOrders(prev => prev.map(o => (o.id === orderId ? order : o)));
+      refreshBooks();
+      showToast(`Order #${orderId} was cancelled successfully. Refund initiated.`, 'info');
+      return true;
+    } catch (err) {
+      showToast(err.message, 'error');
       return false;
     }
-
-    // Refund points if redeemed
-    if (order.pointsRedeemed > 0) {
-      setUser(prev => ({
-        ...prev,
-        giftPoints: (prev.giftPoints || 0) + order.pointsRedeemed - (order.pointsEarned || 0),
-      }));
-    }
-
-    setOrders(prev =>
-      prev.map(o =>
-        o.id === orderId ? { ...o, status: 'Cancelled', canCancel: false } : o
-      )
-    );
-
-    showToast(`Order #${orderId} was cancelled successfully. Refund initiated.`, 'info');
-    return true;
   };
 
   // Recommendations generator based on order history & cart

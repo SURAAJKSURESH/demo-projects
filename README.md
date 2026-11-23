@@ -49,8 +49,27 @@ This application implements all 12 customer journey steps and architecture guide
 - **Framework**: React 18 + Vite
 - **Styling**: Tailwind CSS + Custom Animations
 - **Icons**: Lucide React
-- **State & Persistence**: React Context API with LocalStorage synchronization
+- **Backend**: Node.js + Express 5 REST API (`server/`)
+- **Database**: PostgreSQL (`pg`), schema in `server/schema.sql`
+- **State**: React Context API; books, accounts, addresses and orders live in PostgreSQL, the cart stays in LocalStorage
 - **Engineered with**: IBM BOB Agentic IDE
+
+### Architecture
+
+```
+React (Vite :3000)  --/api proxy-->  Express (:4000)  -->  PostgreSQL (:5432)
+```
+
+The server prices every order itself (subtotal, tax, shipping, points), checks and decrements stock inside a transaction, and restores stock and points on cancellation. Login is email-only (demo level, no password check).
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/books` | Catalogue |
+| POST | `/api/login` | Sign in by email (registers unknown emails) |
+| GET | `/api/users/:id` | User, addresses and order history |
+| POST | `/api/users/:id/addresses` | Add a delivery address |
+| POST | `/api/orders` | Place an order |
+| POST | `/api/orders/:id/cancel` | Cancel within 48 hours |
 
 ---
 
@@ -61,13 +80,27 @@ This application implements all 12 customer journey steps and architecture guide
 npm install
 ```
 
-### 2. Start Development Server
+### 2. Start PostgreSQL
+Use Docker:
 ```bash
-npm run dev
+docker compose up -d
+```
+or an existing PostgreSQL server. Connection settings come from the standard `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` environment variables (defaults: `localhost:5432`, `postgres` / `postgres`, database `pageturn`).
+
+### 3. Create the Schema and Demo Data
+```bash
+npm run db:setup
+```
+Creates the `pageturn` database if missing, applies the schema and loads the 15 books, demo user and sample orders. Safe to re-run.
+
+### 4. Start the API and the Frontend (two terminals)
+```bash
+npm run server   # API on http://localhost:4000
+npm run dev      # UI on http://localhost:3000
 ```
 Open your browser at [http://localhost:3000](http://localhost:3000).
 
-### 3. Build for Production
+### 5. Build for Production
 ```bash
 npm run build
 ```
